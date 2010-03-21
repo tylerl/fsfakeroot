@@ -1,0 +1,121 @@
+fsfakeroot
+===========
+
+ABSTRACT
+
+    fsfakeroot creates a "fake" root environment for non-root users with
+    respect to filesystem operations, such as chown, chmod, and mknod. The
+    results of these operations are store in the extended filesystem
+    attributes of the files modified.
+
+    This project is more narrow in scope than the original fakeroot
+    project; it fakes only system calls relating to filesystem operations
+    and it persists changes only through extended attributes.
+
+IMPLEMENTATION
+
+    This project is implemented as a single library which is loaded using
+    the LD_PRELOAD environment variable. It intercepts and overrides key
+    system calls to give the running program the illusion of running under
+    root permissions. Changes in ownership, mode, and device information
+    are persisted as extended attributes [see attr(5)] attached to the the
+    modified file.
+
+    All extended attributes used fall under the namespace "user.fsfr.*" In
+    order to make this environment more transparent to the user, the
+    fsfakeroot library will filter extended attributes with that prefix out
+    when retrieving an attribute list.
+   
+    As extended attributes are not allowed on symbolic links, changes
+    applied to symbolic links are persisted in "proxy" files. See the
+    SYMBOLIC LINKS section for more information.
+    
+USAGE
+
+    To use this library, add it to the LD_PRELOAD environment variable.
+    For example, to start a bash shell with faked root permission, you
+    could do the following:
+
+        $ LD_PRELOAD=/path/to/fsfakeroot.so bash
+    
+    To take advantage of the "proxy dir" feature for symbolic links, you
+    need to also set the FSFR_PROXY_DIR environment variable, as follows:
+
+        $ mkdir /tmp/.proxy
+        $ FSFR_PROXY_DIR=/tmp/.proxy LD_PRELOAD=/path/to/fsfakeroot.so bash
+    
+    See the SYMBOLIC LINKS section for more information.
+
+    Any changes you make under your "fake root" environment will be evident
+    any time you or anyone views the files or directories with the
+    fsfakeroot library preloaded. 
+    
+    Note that these changes are superficial only. See the LIMITATIONS
+    section for more information about how these changes affect your
+    operating environment.
+    
+    IMPORTANT: 
+    YOU SHOULD ALWAYS USE ABSOLUTE PATHS with the LD_PRELOAD and
+    FSFR_PROXY_DIR variables. If you use a relative path, things will break
+    if the running progam changes its working directory.
+
+LIMITATIONS
+    
+    Some care is taken to ensure that the faked environment is usable to a
+    reasonable extent, while still maintaining the illusion of running as
+    root. For example, changing the group and public permission on a file
+    within the environment will change the appropriate permission bits for
+    the file itself. However, removing read, write and for directories
+    execute, permissions from the owner is "faked", since as root, you
+    can't lock yourself out of your own files.
+
+    "Faked" changes made through the fsfakeroot environment are only
+    visible within the fsfakeroot environment. These chages do not ever
+    affect the system interaction with the files in question.  For example,
+    setting the setuid bit within this environment will only give the
+    appearance of this modification. The operating system will not honor
+    these modifications, even while running within the fsfakeroot
+    environment.
+    
+    In other words, you cannot escalate your privileges in any way through
+    the use of this library.
+
+    The changes made within this environment are visible to anyone who
+    views the files using this library. However, you can only change the
+    "faked" atributes on files that you have permission to modify. 
+
+    As this library uses extended attributes to persist changes, the kernel
+    and filesystem in use MUST support user-defined extended attributes in
+    order for this environment to work. On Linux, these filesystems include
+    ext2, ext3, ext4, XFS, JFS, reiserfs, and btrfs. If the files are
+    copied without copying the extended attributes, or if the files are
+    copied to a filesystem that does not support extended attributes, then
+    the "faked" modifications will be lost.
+
+SYMBOLIC LINKS
+
+    Security policy prohibits attaching user-defined extended attributes to 
+    symbolic links, so "faked" changes to symbolic links cannot be persisted
+    in the normal fashion. To compensate, you can optionally use the 
+    environment variable FSFR_PROXY_DIR to set a location where to store
+    "proxy" files that will host the attributes associated with symbolic
+    links. Proxy files are zero-length and are named using the inode number
+    of the associated symbolic link with the suffix ".fsfr".
+
+    The fsfakeroot environment will create the appropriate proxy files if
+    they do not exist, however, it will never delete these files, even if
+    you delete the associated symbolic link. YOU ARE RESPONSIBLE FOR
+    KEEPING THE PROXY DIRECTORY CLEANED OUT.
+
+    If you run fsfakeroot on an ongoing basis, you should periodically
+    prune your proxy directory by removing the files that do not correspond
+    to an existing symlink. See the prune_proxy.sh script included for an
+    example of how to do this.
+    
+LICENSE
+    
+    Copyright (c) 2010, Tyler Larson <devel@tlarson.com>
+
+    This software is licensed under the terms of the MIT license. See
+    the included file "LICENSE" for more information.
+
