@@ -79,4 +79,6 @@ ssize_t fsfr_base_listxattr(const char *path, char *list, size_t size);
 ssize_t fsfr_base_llistxattr(const char *path, char *list, size_t size);
 ssize_t fsfr_base_flistxattr(int filedes, char *list, size_t size);
 
+extern __thread void *fsfr_statignore;
+
 #endif /* FSFR_H_ */

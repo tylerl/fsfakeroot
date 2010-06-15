@@ -21,6 +21,7 @@
 void * fsfr_dlnext(const char *sym) {
 	//fprintf(stderr,"LOADING %s\n",sym);
 	void * rtn = dlsym(RTLD_NEXT,sym);
+	//fprintf(stderr,"SYM %s: %llu\n",sym,(long long unsigned int)rtn);
 	if (NULL==rtn) {
 		const char *err = dlerror();
 		if (err) {
@@ -31,7 +32,10 @@ void * fsfr_dlnext(const char *sym) {
 			if (NULL==rtn) fprintf(stderr,"Failed loading %s: (unknown error)\n",sym);
 		}
 		// not sure what would be a good generic error, since dlsym doesn't set errno
-		if (NULL==rtn) errno = EINVAL;
+		if (NULL==rtn) {
+			//fprintf(stderr,"Failed to load %s.",sym);
+			errno = EINVAL;
+		}
 	}
 	return rtn;
 }
@@ -42,7 +46,7 @@ int fsfr_proxygetxattr_int(int64_t inode, const char *name)
 	char *proxy_dir = getenv("FSFR_PROXY_DIR");
 	if (!proxy_dir) return -1;
 	char fpath[PATH_MAX];
-	snprintf(fpath,PATH_MAX,"%s/%lli.fsfr",proxy_dir,inode);
+	snprintf(fpath,PATH_MAX,"%s/%lli.fsfr",proxy_dir,(long long int) inode);
 	return fsfr_getxattr_int(fpath,name);
 }
 int fsfr_proxysetxattr_int(int64_t inode, const char *name, int64_t val)
@@ -53,7 +57,7 @@ int fsfr_proxysetxattr_int(int64_t inode, const char *name, int64_t val)
 	// is optional. This is a judgement call; if you don't like it, change
 	// 0 to -1 above.
 	char fpath[PATH_MAX];
-	snprintf(fpath,PATH_MAX,"%s/%lli.fsfr",proxy_dir,inode);
+	snprintf(fpath,PATH_MAX,"%s/%lli.fsfr",proxy_dir,(long long int) inode);
 	struct stat st;
 	if (fsfr_base_stat(fpath,&st)) {
 		fsfr_base_open(fpath,O_WRONLY|O_CREAT|O_TRUNC,0644);
@@ -66,7 +70,7 @@ int fsfr_proxyunsetxattr_int(int64_t inode, const char *name)
 	if (!proxy_dir) return 0;
 	// Also fails silently. See note in fsfr_proxysetxattr_int
 	char fpath[PATH_MAX];
-	snprintf(fpath,PATH_MAX,"%s/%lli.fsfr",proxy_dir,inode);
+	snprintf(fpath,PATH_MAX,"%s/%lli.fsfr",proxy_dir,(long long int) inode);
 	return fsfr_unset_attr(fpath,name);
 }
 

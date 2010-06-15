@@ -14,34 +14,34 @@
 
 /****************************************************************
  *  stat
+ *  	Note that we've replaced __xstat() not stat(), which means
+ *  	internal calls must use the *system* stat, which in turn calls
+ *  	that function. We fsfr_statignore to tell us when to NOT apply
+ *  	custom stat values
  ****************************************************************/
-int fsfr_base_stat(const char *path,struct stat* buf)
-{
-	static int(*fn_orig)(int,const char*,struct stat*) = NULL;
-	if (fn_orig==NULL) fn_orig = fsfr_dlnext("__xstat");
-	if (!fn_orig) { return -1; }
-	return fn_orig(3,path,buf);
-}
-int fsfr_base_lstat(const char *path,struct stat* buf)
-{
-	static int(*fn_orig)(int,const char*,struct stat*) = NULL;
-	if (fn_orig==NULL) fn_orig = fsfr_dlnext("__lxstat");
-	if (!fn_orig) { return -1; }
-	return fn_orig(3,path,buf);
-}
-int fsfr_base_fstat(int fd,struct stat* buf)
-{
-	static int(*fn_orig)(int,int,struct stat*) = NULL;
-	if (fn_orig==NULL) fn_orig = fsfr_dlnext("__fxstat");
-	if (!fn_orig) { return -1; }
-	return fn_orig(3,fd,buf);
-}
+#define IMPLEMENT_STAT(NAME,FILETYPE,STATTYPE)                  \
+int fsfr_base_##NAME(FILETYPE file, STATTYPE *buf)              \
+{                                                               \
+	fsfr_statignore = buf;                                      \
+	int rtn = NAME(file,buf);                                   \
+	fsfr_statignore = 0;                                        \
+	return rtn;                                                 \
+}                                                               
+IMPLEMENT_STAT(stat,		const char*,	struct stat)
+IMPLEMENT_STAT(fstat,		int,			struct stat)
+IMPLEMENT_STAT(lstat,		const char*,	struct stat)
+// These aren't currently used
+//IMPLEMENT_STAT(stat64,		const char*,	struct stat64)
+//IMPLEMENT_STAT(fstat64,		int,			struct stat64)
+//IMPLEMENT_STAT(lstat64,		const char*,	struct stat64)
+#undef IMPLEMENT_STAT
+
 int fsfr_base_fstatat(int dirfd, const char *path, struct stat *buf, int flags)
 {
-	static int(*fn_orig)(int,int,const char*,struct stat*,int flags) = NULL;
-	if (fn_orig==NULL) fn_orig = fsfr_dlnext("__fxstatat");
-	if (!fn_orig) { return -1; }
-	return fn_orig(3,dirfd,path,buf,flags);
+	fsfr_statignore = buf;
+	int rtn = fstatat(dirfd,path,buf,flags);
+	fsfr_statignore = 0;
+	return rtn;
 }
 
 ssize_t fsfr_base_listxattr(const char *path, char *list, size_t size) {
@@ -100,5 +100,13 @@ int fsfr_base_fchmod(int fd, mode_t mode)
 	if (fn_orig==NULL) fn_orig = fsfr_dlnext("fchmod");
 	if (!fn_orig) { return -1; }
 	return fn_orig(fd,mode);
+}
+
+int fsfr_base_lchmod(const char *path, mode_t mode)
+{
+	static int(*fn_orig)(const char *, mode_t) = NULL;
+	if (fn_orig==NULL) fn_orig = fsfr_dlnext("lchmod");
+	if (!fn_orig) { return -1; }
+	return fn_orig(path,mode);
 }
 

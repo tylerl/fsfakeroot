@@ -13,6 +13,7 @@
 #include "fsfr.h"
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 
 #undef __xstat
@@ -23,6 +24,7 @@
 #undef __lxstat64
 #undef _FILE_OFFSET_BITS
 
+__thread void *fsfr_statignore = 0;
 
 /****************************************************************
  *  getuid() et. al.
@@ -33,19 +35,27 @@ uid_t geteuid(void) { return 0; }
 gid_t getgid(void)  { return 0; }
 gid_t getegid(void) { return 0; }
 
+// rsync calls these -- just ignore
+int setresuid(uid_t ruid, uid_t euid, uid_t suid) { return 0; }
+int setresgid(uid_t ruid, uid_t euid, uid_t suid) { return 0; }
+
 /****************************************************************
  *  stat() variations
  *  	Replace returned statistics with those stored in xattrs
  *  	if the xattrs are set.
+ *  	Note that we're replacing __xstat() not stat(), which means
+ *  	internal calls must use the *system* stat, which in turn calls
+ *  	this function. We fsfr_statignore to tell us when to NOT apply
+ *  	custom stat values
  ****************************************************************/
 #define IMPLEMENT_STAT(NAME,FILETYPE,STATTYPE,GETATTR)						\
-int NAME(int ver, FILETYPE file, STATTYPE buf)								\
+int NAME(int ver, FILETYPE file, STATTYPE *buf)								\
 {																			\
-	static int(*fn_orig)(int,FILETYPE,STATTYPE) = NULL;						\
+	static int(*fn_orig)(int,FILETYPE,STATTYPE*) = NULL;					\
 	if (NULL==fn_orig) fn_orig = fsfr_dlnext(#NAME);						\
 	if (!fn_orig) { return -1; }											\
 	int rtn = fn_orig(ver,file,buf);										\
-	if (rtn || !buf) return rtn;											\
+	if (rtn || !buf || (buf==fsfr_statignore)) return rtn;					\
 	int mask = GETATTR(file,XATTR_MODEMASK,buf);							\
 	int uid = GETATTR(file,XATTR_UID,buf);									\
 	int gid = GETATTR(file,XATTR_GID,buf);									\
@@ -59,12 +69,12 @@ int NAME(int ver, FILETYPE file, STATTYPE buf)								\
 	if (rdev!=-1) buf->st_rdev = rdev;										\
 	return 0;																\
 }
-IMPLEMENT_STAT(__xstat,		const char*,	struct stat*, 	fsfr_getxattr_int_stat)
-IMPLEMENT_STAT(__fxstat,	int,			struct stat*, 	fsfr_fgetxattr_int_stat)
-IMPLEMENT_STAT(__lxstat,	const char*, 	struct stat*, 	fsfr_lgetxattr_int_stat)
-IMPLEMENT_STAT(__xstat64,	const char*, 	struct stat64*,	fsfr_getxattr_int_stat64)
-IMPLEMENT_STAT(__fxstat64,	int,			struct stat64*,	fsfr_fgetxattr_int_stat64)
-IMPLEMENT_STAT(__lxstat64,	const char*, 	struct stat64*,	fsfr_lgetxattr_int_stat64)
+IMPLEMENT_STAT(__xstat,		const char*,	struct stat, 	fsfr_getxattr_int_stat)
+IMPLEMENT_STAT(__fxstat,	int,			struct stat, 	fsfr_fgetxattr_int_stat)
+IMPLEMENT_STAT(__lxstat,	const char*, 	struct stat, 	fsfr_lgetxattr_int_stat)
+IMPLEMENT_STAT(__xstat64,	const char*, 	struct stat64,	fsfr_getxattr_int_stat64)
+IMPLEMENT_STAT(__fxstat64,	int,			struct stat64,	fsfr_fgetxattr_int_stat64)
+IMPLEMENT_STAT(__lxstat64,	const char*, 	struct stat64,	fsfr_lgetxattr_int_stat64)
 #undef IMPLEMENT_STAT
 
 /****************************************************************
@@ -97,32 +107,38 @@ IMPLEMENT_CHOWN(lchown,	const char*,fsfr_lsetxattr_int_stat,fsfr_base_lstat,lchm
  *  	  the user can always access the files (as root could)
  ****************************************************************/
 // Root wouldn't be able to lock himself out of a directory or file,
-// so we just make sure that u+rwX stays set; only for files and dirs
+// so we just make sure that u+rwX stays set; only for files and dirs.
+// also, only *actually* set the 0777 subset; others are virtual
 int chmod(const char *path, mode_t mode)
 {
-	//fprintf(stderr,"chmod %s: 0%3o\n",path,mode);
 	struct stat st;
-	fsfr_base_stat(path,&st);
+	if (fsfr_base_stat(path,&st)) {
+		perror("stat error");
+		return -1;
+	}
 	int oldmask = fsfr_getxattr_int_stat(path,XATTR_MODEMASK,&st);
 	if (oldmask==-1) oldmask = 0;
-	int reqmode = 00600;
+	int reqmode = 00600; // "required mode bits"
 	if (S_ISDIR(st.st_mode)) {
 		reqmode = reqmode | 00100;	// dirs require u+x
 	} else if (!S_ISREG(st.st_mode)) {
-		return fsfr_base_chmod(path,mode);	// we don't mess with everything else
+		return fsfr_base_chmod(path,mode);	// we only mess with files and dirs
 	}
 
-	int filemode = mode | reqmode;
+	// which modes go to file, which modes go to xattr
+	int filemode = (mode | reqmode) & 00777;
 	int fakemode = mode;
 	int newmask = filemode ^ fakemode;
 
-	if (oldmask & ~0777) {
+	if (oldmask & ~00777) { // preserve old extended mode bits if exist
 		int oldmode = fsfr_getxattr_int_stat(path,XATTR_MODE,&st);
 		if (oldmode==-1) oldmode = 0;
 		// fake non-file
-		fakemode = fakemode | (oldmode & ~0777);
-		newmask = newmask | (oldmask & ~0777);
+		fakemode = fakemode | (oldmode & ~00777);
+		newmask = newmask | (oldmask & ~00777);
 	}
+
+	//fprintf(stderr, " chmod 0%o => 0%o + 0%o\n",mode,filemode,fakemode);
 
 	if (fsfr_base_chmod(path,filemode)) {
 		return -1;
@@ -139,6 +155,7 @@ int chmod(const char *path, mode_t mode)
 	return 0;
 }
 // same as above, but w/ FDs
+// which I could merge them into a single code block... but alas, 'tis C
 int fchmod(int fd, mode_t mode)
 {
 	//fprintf(stderr,"chmod %s: 0%3o\n",path,mode);
@@ -150,21 +167,21 @@ int fchmod(int fd, mode_t mode)
 	if (S_ISDIR(st.st_mode)) {
 		reqmode = reqmode | 00100;	// dirs require u+x
 	} else if (!S_ISREG(st.st_mode)) {
-		return fsfr_base_fchmod(fd,mode);	// we don't mess with everything else
+		return fsfr_base_fchmod(fd,mode);	// we only mess with files and dirs
 	}
 
-	int filemode = mode | reqmode;
+	// which modes go to file, which modes go to xattr
+	int filemode = (mode | reqmode) & 00777;
 	int fakemode = mode;
 	int newmask = filemode ^ fakemode;
 
-	if (oldmask & ~0777) {
+	if (oldmask & ~0777) { // preserve old extended mode bits if exist
 		int oldmode = fsfr_fgetxattr_int_stat(fd,XATTR_MODE,&st);
 		if (oldmode==-1) oldmode = 0;
 		// fake non-file
 		fakemode = fakemode | (oldmode & ~0777);
 		newmask = newmask | (oldmask & ~0777);
 	}
-
 	if (fsfr_base_fchmod(fd,filemode)) {
 		return -1;
 	}
@@ -175,6 +192,47 @@ int fchmod(int fd, mode_t mode)
 	} else {
 		fsfr_fsetxattr_int_stat(fd,XATTR_MODE,fakemode,&st);
 		fsfr_fsetxattr_int_stat(fd,XATTR_MODEMASK,newmask,&st);
+	}
+
+	return 0;
+}
+// same again, but this time non link dereferencing
+int lchmod(const char *path, mode_t mode)
+{
+	struct stat st;
+	fsfr_base_stat(path,&st);
+	int oldmask = fsfr_lgetxattr_int_stat(path,XATTR_MODEMASK,&st);
+	if (oldmask==-1) oldmask = 0;
+	int reqmode = 00600; // "required mode bits"
+	if (S_ISDIR(st.st_mode)) {
+		reqmode = reqmode | 00100;	// dirs require u+x
+	} else if (!S_ISREG(st.st_mode)) {
+		return fsfr_base_lchmod(path,mode);	// we only mess with files and dirs
+	}
+
+	// which modes go to file, which modes go to xattr
+	int filemode = (mode | reqmode) & 00777;
+	int fakemode = mode;
+	int newmask = filemode ^ fakemode;
+
+	if (oldmask & ~00777) { // preserve old extended mode bits if exist
+		int oldmode = fsfr_lgetxattr_int_stat(path,XATTR_MODE,&st);
+		if (oldmode==-1) oldmode = 0;
+		// fake non-file
+		fakemode = fakemode | (oldmode & ~00777);
+		newmask = newmask | (oldmask & ~00777);
+	}
+
+	if (fsfr_base_lchmod(path,filemode)) {
+		return -1;
+	}
+
+	if (filemode == fakemode) {	// clear mode xattr if no longer used
+		fsfr_lunset_attr_stat(path,XATTR_MODE,&st);
+		fsfr_lunset_attr_stat(path,XATTR_MODEMASK,&st);
+	} else {
+		fsfr_lsetxattr_int_stat(path,XATTR_MODE,fakemode,&st);
+		fsfr_lsetxattr_int_stat(path,XATTR_MODEMASK,newmask,&st);
 	}
 
 	return 0;
@@ -290,7 +348,7 @@ int symlink(const char *oldpath, const char *newpath)
 	if (!fn_orig) { return -1; }
 	int rtn = fn_orig(oldpath,newpath);
 	if (!rtn) {
-		lchown(newpath,0,0);
+		int discard = lchown(newpath,0,0);
 	}
 	return rtn;
 }
@@ -406,6 +464,8 @@ int openat(int fd, const char *pathname, int flags, mode_t mode)
  *  	
  ****************************************************************/
 #define IMPLEMENT_AT(OUTFN,LOUTFN,...) 							\
+	int discard;												\
+	void *discardp;												\
 	if (pathname[0]=='/' || AT_FDCWD==fd) {						\
 		const char *path = pathname;							\
 		if ((flags & AT_SYMLINK_NOFOLLOW)==AT_SYMLINK_NOFOLLOW)	\
@@ -420,10 +480,10 @@ int openat(int fd, const char *pathname, int flags, mode_t mode)
 			strncat(path,pathname,PATH_MAX);					\
 		} else {												\
 			DIR* save = opendir(".");							\
-			fchdir(fd);											\
-			getcwd(path,PATH_MAX);								\
-			fchdir(dirfd(save));								\
-			closedir(save);										\
+			discard = fchdir(fd);								\
+			discardp = getcwd(path,PATH_MAX);					\
+			discard = fchdir(dirfd(save));						\
+			discard = closedir(save);							\
 			strncat(path,"/",PATH_MAX);							\
 		}														\
 		strncat(path,pathname,PATH_MAX);						\

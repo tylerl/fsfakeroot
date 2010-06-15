@@ -1,5 +1,5 @@
-CFLAGS+=-O2
-#CFLAGS+=-g
+CFLAGS+=-O2 -fPIC
+#CFLAGS+=-g -fPIC
 LFLAGS+=-ldl
 
 fsfakeroot.so: fsfakeroot.c  fsfr_base.c  fsfr.h  fsfr_internal.c
