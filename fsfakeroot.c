@@ -477,7 +477,6 @@ int openat(int fd, const char *pathname, int flags, mode_t mode)
 		char *path = alloca(PATH_MAX+1);						\
 		if (!access("/proc/self/fd",X_OK)) {					\
 			sprintf(path,"/proc/self/fd/%i/",fd);				\
-			strncat(path,pathname,PATH_MAX);					\
 		} else {												\
 			DIR* save = opendir(".");							\
 			discard = fchdir(fd);								\
