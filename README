@@ -59,6 +59,13 @@ USAGE
     FSFR_PROXY_DIR variables. If you use a relative path, things will break
     if the running progam changes its working directory.
 
+ALTERNATE UIDS
+
+	If you would prefer to pretend to be a different user (other than root),
+	you can do so by setting the environment variables FSFR_UID, FSFR_EUID,
+	FSFR_GID, and FSFR_EGID accordingly. Calls to setresuid() and setresgid()
+	are also intercepted and modified to set the appropriate variables.
+
 LIMITATIONS
     
     Some care is taken to ensure that the faked environment is usable to a

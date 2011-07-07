@@ -29,16 +29,49 @@ __thread void *fsfr_statignore = 0;
 /****************************************************************
  *  getuid() et. al.
  ****************************************************************/
+uid_t fsfr_fetch_uid(char *name) {
+	char *id = getenv(name);
+	if (!id) return 0;
+	return (uid_t) strtoll(id,NULL,0);
+}
+void fsfr_set_uid(char *name, uid_t uid) {
+	char buff[22];
+	sprintf(buff,"%i",uid);
+	setenv(name,buff,1);
+}
 // We're faking root; this does the most obvious part of that process
-uid_t getuid(void)  { return 0; }
-uid_t geteuid(void) { return 0; }
-gid_t getgid(void)  { return 0; }
-gid_t getegid(void) { return 0; }
+uid_t getuid(void)  { return fsfr_fetch_uid("FSFR_UID"); }
+uid_t geteuid(void) { return fsfr_fetch_uid("FSFR_EUID"); }
+gid_t getgid(void)  { return (gid_t) fsfr_fetch_uid("FSFR_GID"); }
+gid_t getegid(void) { return (gid_t) fsfr_fetch_uid("FSFR_EGID"); }
 
-// rsync calls these -- just ignore
-int setresuid(uid_t ruid, uid_t euid, uid_t suid) { return 0; }
-int setresgid(uid_t ruid, uid_t euid, uid_t suid) { return 0; }
-
+// rsync calls these 
+int setresuid(uid_t ruid, uid_t euid, uid_t suid) { 
+	if (ruid >-1) fsfr_set_uid("FSFR_UID",ruid);
+	if (euid >-1) fsfr_set_uid("FSFR_EUID",ruid);
+	if (euid >-1) fsfr_set_uid("FSFR_SUID",ruid);
+	return 0; 
+}
+int setresgid(uid_t ruid, uid_t euid, uid_t suid) { 
+	if (ruid >-1) fsfr_set_uid("FSFR_GID",ruid);
+	if (euid >-1) fsfr_set_uid("FSFR_EGID",ruid);
+	if (euid >-1) fsfr_set_uid("FSFR_SGID",ruid);
+	return 0; 
+}
+int getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)
+{
+	if (ruid) *ruid = fsfr_fetch_uid("FSFR_UID");
+	if (euid) *euid = fsfr_fetch_uid("FSFR_EUID");
+	if (suid) *suid = fsfr_fetch_uid("FSFR_SUID");
+	return 0;
+}
+int getresgid(uid_t *ruid, uid_t *euid, uid_t *suid)
+{
+	if (ruid) *ruid = fsfr_fetch_uid("FSFR_GID");
+	if (euid) *euid = fsfr_fetch_uid("FSFR_EGID");
+	if (suid) *suid = fsfr_fetch_uid("FSFR_SGID");
+	return 0;
+}
 /****************************************************************
  *  stat() variations
  *  	Replace returned statistics with those stored in xattrs
@@ -299,8 +332,8 @@ ssize_t flistxattr(int fd, char *list, size_t size)
 void frfs_mknod_helper(int fd, mode_t mode, dev_t dev)
 {
 	int mask = 00777;
-	fsfr_fsetxattr_int(fd,XATTR_UID,0);
-	fsfr_fsetxattr_int(fd,XATTR_GID,0);
+	fsfr_fsetxattr_int(fd,XATTR_UID,getuid());
+	fsfr_fsetxattr_int(fd,XATTR_GID,getgid());
 	fsfr_fsetxattr_int(fd,XATTR_RDEV,dev);
 	fsfr_fsetxattr_int(fd,XATTR_MODE,mode & ~mask);
 	fsfr_fsetxattr_int(fd,XATTR_MODEMASK,~mask);
@@ -348,7 +381,7 @@ int symlink(const char *oldpath, const char *newpath)
 	if (!fn_orig) { return -1; }
 	int rtn = fn_orig(oldpath,newpath);
 	if (!rtn) {
-		int discard = lchown(newpath,0,0);
+		int discard = lchown(newpath,getuid(),getgid());
 	}
 	return rtn;
 }
@@ -368,8 +401,8 @@ int mkdir(const char *pathname, mode_t mode)
 	if (!fn_orig) { return -1; }
 	int rtn = fn_orig(pathname,new_mode);
 	if (!rtn) {
-		fsfr_setxattr_int(pathname,XATTR_UID,0);
-		fsfr_setxattr_int(pathname,XATTR_GID,0);
+		fsfr_setxattr_int(pathname,XATTR_UID,getuid());
+		fsfr_setxattr_int(pathname,XATTR_GID,getgid());
 		if (mode != new_mode) {
 			fsfr_setxattr_int(pathname,XATTR_MODE,mode&reqmode);
 			fsfr_setxattr_int(pathname,XATTR_MODEMASK,reqmode);
@@ -389,8 +422,8 @@ int mkdirat(int fd, const char *pathname, mode_t mode)
 	if (!rtn) {
 		int newfd = fsfr_base_openat(fd,pathname,O_DIRECTORY,0777);
 		if (newfd!=-1) {
-			fsfr_fsetxattr_int(newfd,XATTR_UID,0);
-			fsfr_fsetxattr_int(newfd,XATTR_GID,0);
+			fsfr_fsetxattr_int(newfd,XATTR_UID,getuid());
+			fsfr_fsetxattr_int(newfd,XATTR_GID,getgid());
 			if (mode != new_mode) {
 				fsfr_fsetxattr_int(newfd,XATTR_MODE,mode&reqmode);
 				fsfr_fsetxattr_int(newfd,XATTR_MODEMASK,reqmode);
